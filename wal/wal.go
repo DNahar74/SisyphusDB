@@ -6,14 +6,21 @@ import (
 	"hash/crc32"
 	"io"
 	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
 
+const maxSegmentSize = 10 * 1024 // 10 KB
+
 type WAL struct {
-	file       *os.File
-	mu         sync.Mutex
-	currentLSN uint64
+	activeSegment      *os.File
+	currentSegmentId   int64
+	currentSegmentSize int64
+	mu                 sync.Mutex
+	currentLSN         uint64
 }
 type Command byte
 
@@ -38,13 +45,18 @@ func (w *WAL) Write(key string, val string, cmd Command) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	// Log Rotation implementation:
+	if w.currentSegmentSize >= maxSegmentSize {
+		if err := w.rotate(); err != nil {
+			return err
+		}
+	}
 	keySize := len(key)
 	valSize := len(val)
 
-	totalSize := headerSize + keySize + valSize
+	totalSize := int64(headerSize + keySize + valSize)
 
 	buf := make([]byte, totalSize)
-
 	timestamp := uint64(time.Now().UnixNano())
 
 	binary.LittleEndian.PutUint64(buf[4:12], w.currentLSN)
@@ -59,17 +71,46 @@ func (w *WAL) Write(key string, val string, cmd Command) error {
 	crc := crc32.ChecksumIEEE(buf[4:])
 	binary.LittleEndian.PutUint32(buf[0:4], crc)
 
-	nextLSN := w.currentLSN + uint64(totalSize)
-	w.currentLSN = nextLSN
-
-	if _, err := w.file.Write(buf); err != nil {
+	if _, err := w.activeSegment.Write(buf); err != nil {
 		return err
 	}
-	return w.file.Sync() // Do not sync for every entry for larger applications
+	// Do not sync for every entry for larger applications
+	if err := w.activeSegment.Sync(); err != nil {
+		return err
+	}
+
+	nextLSN := w.currentLSN + uint64(totalSize)
+	w.currentLSN = nextLSN
+	w.currentSegmentSize += totalSize
+
+	return nil
+}
+
+func (w *WAL) rotate() error {
+	if err := w.activeSegment.Sync(); err != nil {
+		return err
+	}
+	if err := w.activeSegment.Close(); err != nil {
+		return err
+	}
+	// Log Segmentation implementation:
+	w.currentSegmentId++
+	fileName := fmt.Sprintf("wal-%05d.log", w.currentSegmentId)
+	filePath := filepath.Join("logs", fileName)
+
+	file, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
+	if err != nil {
+		return err
+	}
+	w.activeSegment = file
+	w.currentSegmentSize = 0
+	w.currentLSN = 0
+	fmt.Printf("Rotated WAL to segment %d\n", w.currentSegmentId)
+	return nil
 }
 
 func (w *WAL) Recover() ([]Entry, error) {
-	if _, err := w.file.Seek(0, io.SeekStart); err != nil {
+	if _, err := w.activeSegment.Seek(0, io.SeekStart); err != nil {
 		return nil, err
 	}
 	var entries []Entry
@@ -77,7 +118,7 @@ func (w *WAL) Recover() ([]Entry, error) {
 	header := make([]byte, headerSize)
 
 	for {
-		_, err := io.ReadFull(w.file, header)
+		_, err := io.ReadFull(w.activeSegment, header)
 		if err == io.EOF {
 			break
 		}
@@ -94,7 +135,7 @@ func (w *WAL) Recover() ([]Entry, error) {
 
 		data := make([]byte, valSize+keySize)
 
-		if _, err := io.ReadFull(w.file, data); err != nil {
+		if _, err := io.ReadFull(w.activeSegment, data); err != nil {
 			return nil, io.ErrUnexpectedEOF
 		}
 		digest := crc32.NewIEEE()
@@ -126,15 +167,54 @@ func (w *WAL) Recover() ([]Entry, error) {
 	return entries, nil
 }
 
-func OpenWAL(filename string) (*WAL, []Entry, error) {
-	file, err := os.OpenFile(filename, os.O_RDWR|os.O_CREATE, 0644)
+func findActiveFile(dirPath string) (string, int64, error) {
+	files, err := os.ReadDir(dirPath)
+	if err != nil {
+		return "", 0, err
+	}
+	var walFiles []string
+	for _, file := range files {
+		fileName := file.Name()
+		if strings.HasPrefix(fileName, "wal-") && strings.HasSuffix(fileName, ".log") {
+			walFiles = append(walFiles, fileName)
+		}
+	}
+	sort.Slice(walFiles, func(i, j int) bool {
+		return walFiles[i] < walFiles[j]
+	})
+	var activeFileName string
+	var activeSegmentID int64
+
+	if len(walFiles) == 0 {
+		activeSegmentID = 0
+		activeFileName = filepath.Join(dirPath, fmt.Sprintf("wal-%05d.log", activeSegmentID))
+
+	} else {
+		lastFile := walFiles[len(walFiles)-1]
+		activeFileName = filepath.Join(dirPath, lastFile)
+		_, err = fmt.Sscanf(lastFile, "wal-%05d.log", &activeSegmentID)
+		if err != nil {
+			return "", 0, err
+		}
+	}
+	return activeFileName, activeSegmentID, nil
+}
+
+func OpenWAL(dirPath string) (*WAL, []Entry, error) {
+
+	activeFile, activeSegmentID, _ := findActiveFile(dirPath)
+	file, err := os.OpenFile(activeFile, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
 		return nil, nil, err
 	}
 
+	stat, _ := file.Stat()
+
 	w := &WAL{
-		file:       file,
-		currentLSN: 0,
+		activeSegment:      file,
+		currentSegmentId:   activeSegmentID,
+		currentSegmentSize: stat.Size(),
+		currentLSN:         0,
 	}
 
 	entries, err := w.Recover()

@@ -12,7 +12,7 @@ type Server struct {
 }
 
 func NewServer() *Server {
-	newStore, err := kv.NewKVStore("database.log")
+	newStore, err := kv.NewKVStore("logs")
 	if err != nil {
 		panic(err)
 	}
