@@ -27,13 +27,15 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Missing key/val", http.StatusBadRequest)
 		return
 	}
-	// Store in table
-	s.store.Put(key, val)
 
 	// Write in logs
 	er := s.store.Wal.Write(key, val, wal.CmdPut)
 	if er != nil {
 		fmt.Println("Error writing log: ", er)
+	}
+	// Store in table
+	if err := s.store.Put(key, val, false); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 
 	_, err := fmt.Fprintf(w, "Success Put: %s in %s", key, val)
@@ -67,10 +69,13 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if key == "" {
 		http.Error(w, "No key found", http.StatusBadRequest)
 	}
-	// Delete from table
-	s.store.Delete(key)
 	// Write in logs
 	er := s.store.Wal.Write(key, "", wal.CmdDelete)
+	// Delete from table
+	if err := s.store.Put(key, "", true); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+
 	if er != nil {
 		fmt.Println("Error writing log: ", er)
 	}
