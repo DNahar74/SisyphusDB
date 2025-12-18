@@ -13,8 +13,6 @@ import (
 	"time"
 )
 
-const maxSegmentSize = 10 * 1024 // 10 KB
-
 type WAL struct {
 	file       *os.File
 	path       string
