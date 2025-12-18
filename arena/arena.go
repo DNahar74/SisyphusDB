@@ -41,7 +41,7 @@ func (a *Arena) Put(key string, val string, isDelete bool) (int, error) {
 	binary.LittleEndian.PutUint32(lenBuff[2:4], uint32(len(val)))
 
 	a.data = append(a.data, header)
-	a.data = append(a.data, lenBuff[])
+	a.data = append(a.data, lenBuff[:]...)
 	a.data = append(a.data, key...)
 
 	if !isDelete {

@@ -2,7 +2,6 @@ package main
 
 import (
 	"KV-Store/kv"
-	"KV-Store/wal"
 	"fmt"
 	"net/http"
 )
@@ -26,12 +25,6 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 	if key == "" || val == "" {
 		http.Error(w, "Missing key/val", http.StatusBadRequest)
 		return
-	}
-
-	// Write in logs
-	er := s.store.Wal.Write(key, val, wal.CmdPut)
-	if er != nil {
-		fmt.Println("Error writing log: ", er)
 	}
 	// Store in table
 	if err := s.store.Put(key, val, false); err != nil {
@@ -69,15 +62,9 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if key == "" {
 		http.Error(w, "No key found", http.StatusBadRequest)
 	}
-	// Write in logs
-	er := s.store.Wal.Write(key, "", wal.CmdDelete)
 	// Delete from table
 	if err := s.store.Put(key, "", true); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
-
-	if er != nil {
-		fmt.Println("Error writing log: ", er)
 	}
 
 	fmt.Printf("Delete %s\n", key)
