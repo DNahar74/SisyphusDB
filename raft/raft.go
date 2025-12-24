@@ -102,13 +102,61 @@ func (rf *Raft) startElection() {
 	rf.currentTerm++
 	rf.votedFor = rf.me
 	rf.lastResetTime = time.Now()
+
 	term := rf.currentTerm
+	lastLogIndex := len(rf.log) - 1
+	lastLogTerm := rf.log[lastLogIndex].term
 	rf.mu.Unlock()
 
+	votesReceived := 1 //self
+	votesRequired := len(rf.peers)/2 + 1
+
 	fmt.Printf("Node %d starting election timer for term %d", rf.me, term)
-	// TODO: Send Request Vote RPCs
+	for i := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+		for i := range rf.peers {
+			go func(peerIndex int) {
+				args := RequestVoteArgs{
+					Term:         term,
+					CandidateId:  rf.me,
+					LastLogTerm:  lastLogTerm,
+					LastLogIndex: lastLogIndex,
+				}
+				reply := RequestVoteReply{}
+				if rf.state != Candidate || rf.currentTerm != term {
+					return
+				}
+				// current term is outdated
+				if reply.Term > rf.currentTerm {
+					rf.currentTerm = reply.Term
+					rf.state = Follower
+					rf.votedFor = -1
+					return
+				}
+				if rf.sendRequestVote(peerIndex, &args, &reply) {
+					rf.mu.Lock()
+					defer rf.mu.Unlock()
+					if reply.VoteGranted {
+						votesReceived++
+						if votesReceived >= votesRequired {
+							fmt.Printf("Node %d won election and will be leader for the term: %d", rf.me, reply.Term)
+							rf.state = Leader
+							for p := range rf.peers {
+								rf.nextIndex[p] = len(rf.log) // Optimistically assume they match
+								rf.matchIndex[p] = 0
+							}
+							go rf.sendHeartBeats()
+						}
+					}
+				}
+			}(i)
+		}
+
+	}
 }
 
-func (rf *Raft) sendHeartBeats() {
-	// TODO: Send heartbeat as a leader to all peers
+func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+	return false
 }
