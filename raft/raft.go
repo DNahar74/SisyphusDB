@@ -70,8 +70,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	rf.log = append(rf.log, LogEntry{index, term, cmdBytes})
 
-	// TODO: Persistance
-	// rf.persist() - saves to disk
+	rf.persist()
 
 	//trigger replication
 	//TODO: Optimization
@@ -122,6 +121,7 @@ func Make(peers []pb.RaftServiceClient, me int, applyCh chan LogEntry) *Raft {
 	rf.nextIndex = make(map[int]int)
 	rf.matchIndex = make(map[int]int)
 
+	rf.readPersist()
 	rf.lastResetTime = time.Now()
 
 	go rf.ticker()

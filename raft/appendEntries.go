@@ -36,6 +36,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.state = Follower
 	rf.votedFor = -1
 	rf.lastResetTime = time.Now()
+	rf.persist()
 	reply.Term = rf.currentTerm
 
 	LastLogIndex := len(rf.log) - 1
@@ -54,9 +55,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			if rf.log[index].term != args.Term {
 				rf.log = rf.log[:index]        // truncate the log upto match
 				rf.log = append(rf.log, entry) // append new entry
+				rf.persist()
 			}
 		} else { // no conflict in log
 			rf.log = append(rf.log, entry)
+			rf.persist()
 		}
 
 		//update commit index taking the minimum of leader's commit index and the actual committed data in server

@@ -29,6 +29,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.currentTerm = args.Term
 		rf.state = Follower
 		rf.votedFor = -1
+		rf.persist()
 	}
 	lastLogIndex := len(rf.log) - 1
 	LastLogTerm := rf.log[lastLogIndex].term
@@ -45,6 +46,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.votedFor = args.CandidateId
 		rf.state = Follower
 		rf.lastResetTime = time.Now()
+		rf.persist()
 		reply.VoteGranted = true
 	} else {
 		reply.VoteGranted = false
