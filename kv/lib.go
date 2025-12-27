@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const mapLimit = 10 * 1024 // 10KB for now
+const mapLimit = 1 * 1024 * 1024 // 10KB for now
 
 type Commands byte
 
@@ -111,26 +111,42 @@ func CreateSSTable(frozenMem *MemTable, sstDir string, level int) error { // Add
 }
 
 func (s *Store) FlushWorker() {
+	// Loop forever
+	for {
+		// Wait for signal
+		<-s.flushChan
+		// Keep working until frozenMap is gone
+		// Use an inner loop to process back-to-back flushes
+		for {
+			s.mu.Lock()
+			frozenMem := s.frozenMap
+			s.mu.Unlock()
 
-	for range s.flushChan {
-		s.mu.Lock()
-		frozenMem := s.frozenMap
-		s.mu.Unlock()
-		if frozenMem == nil || frozenMem.size == 0 {
-			continue
+			if frozenMem == nil {
+				break // Go back to sleep
+			}
+
+			//  Do the heavy lifting
+			err := CreateSSTable(frozenMem, s.sstDir, 0)
+
+			s.mu.Lock()
+			if err != nil {
+				// LOG ERROR but DO NOT DEADLOCK.
+				// We clear the map anyway to allow new writes.
+				fmt.Printf("CRITICAL FLUSH ERROR: %v\n", err)
+			}
+
+			//  CLEAR THE MAP (Crucial!)
+			s.frozenMap = nil
+			if s.activeMap.Wal != nil {
+				_ = s.activeMap.Wal.Remove()
+			}
+			s.mu.Unlock()
+
+			s.refreshSSTables()
+
+			// Trigger compaction asynchronously
+			go func() { _ = s.CheckAndCompact(0) }()
 		}
-		err := CreateSSTable(frozenMem, s.sstDir, 0)
-		if err != nil {
-			fmt.Printf("Failed to create SSTable %s: %s\n", s.walDir, err)
-			continue
-		}
-		s.mu.Lock()
-		s.frozenMap = nil
-		if s.activeMap.Wal != nil {
-			_ = s.activeMap.Wal.Remove() // Clean up old WAL
-		}
-		s.mu.Unlock()
-		s.refreshSSTables()
-		_ = s.CheckAndCompact(0)
 	}
 }

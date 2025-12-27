@@ -157,6 +157,7 @@ func (s *Store) refreshSSTables() {
 		}
 	}
 	s.ssTables = readers
+	s.reportLevelMetrics()
 }
 
 func (s *Store) reportLevelMetrics() {
