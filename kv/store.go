@@ -34,10 +34,12 @@ type Store struct {
 	flushChan chan struct{} // FrozenMem -> Active Mem
 	me        int           // same as raft.me, for prometheus metrics
 	// Raft Channels
-	Raft        *raft.Raft
-	notifyChans map[int]chan OpResult // return client -> success
-	applyCh     chan raft.LogEntry    // applied cmds -> internal storage
-	mu          sync.RWMutex
+	Raft         *raft.Raft
+	notifyChans  map[int]chan OpResult // return client -> success
+	applyCh      chan raft.LogEntry    // applied cmds -> internal storage
+	mu           sync.RWMutex
+	compactionMu sync.Mutex
+	cond         *sync.Cond
 }
 
 func NewKVStore(peers []pb.RaftServiceClient, me int) (*Store, error) {
@@ -65,6 +67,7 @@ func NewKVStore(peers []pb.RaftServiceClient, me int) (*Store, error) {
 		applyCh:   applyCh,
 		me:        me,
 	}
+	store.cond = sync.NewCond(&store.mu)
 	for _, entry := range entries {
 		k := string(entry.Key)
 		v := string(entry.Value)

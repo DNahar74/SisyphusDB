@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const mapLimit = 1 * 1024 * 1024 // 10KB for now
+const mapLimit = 10 * 1024 // 10KB per map
 
 type Commands byte
 
@@ -38,9 +38,19 @@ func NewMemTable(size int, newWal *wal.WAL) *MemTable {
 }
 
 func (s *Store) RotateTable() {
+	if s.frozenMap != nil {
+		fmt.Println("[RotateTable] Waiting for previous frush to finish")
+		for s.frozenMap != nil {
+			// conditional sync, when FlushWorker calls Signal() - this re-locks s.mu and continues
+			s.cond.Wait()
+		}
+	}
 	s.frozenMap = s.activeMap
 	s.walSeq++
-	newWal, _ := wal.OpenWAL(s.walDir, s.walSeq)
+	newWal, err := wal.OpenWAL(s.walDir, s.walSeq)
+	if err != nil {
+		panic(fmt.Sprintf("OpenWAL failed in rotateTable(): %v", err))
+	}
 	s.activeMap = NewMemTable(mapLimit, newWal)
 
 	select {
@@ -138,9 +148,7 @@ func (s *Store) FlushWorker() {
 
 			//  CLEAR THE MAP (Crucial!)
 			s.frozenMap = nil
-			if s.activeMap.Wal != nil {
-				_ = s.activeMap.Wal.Remove()
-			}
+			s.cond.Signal()
 			s.mu.Unlock()
 
 			s.refreshSSTables()

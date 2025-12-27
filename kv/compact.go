@@ -36,6 +36,9 @@ func (s *Store) getFilesForLevel(level int) []string {
 // if any level contains > 4 files
 
 func (s *Store) CheckAndCompact(level int) error {
+	s.compactionMu.Lock()
+	defer s.compactionMu.Unlock()
+
 	s.mu.Lock()
 	levelFiles := s.getFilesForLevel(level)
 	//if we have fewer than 4 files, do nothing

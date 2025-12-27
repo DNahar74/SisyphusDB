@@ -80,6 +80,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	rf.persist()
 	fmt.Printf("[Start] Leader %d received command at Index %d, Term %d\n", rf.me, index, term)
+
 	//trigger replication
 	go rf.sendHeartBeats()
 	return index, term, true
@@ -140,7 +141,7 @@ func Make(peers []pb.RaftServiceClient, me int, applyCh chan LogEntry) *Raft {
 func (rf *Raft) ticker() {
 	for {
 		//sleep for a short duration of time
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 		rf.reportMetrics()
 
 		rf.mu.Lock()
