@@ -55,9 +55,8 @@ func main() {
 	peerAdds := flag.String("peers", "", "Comma separated list of peer addresses")
 	rpcPort := flag.String("port", "5001", "gRPC port for Raft communication")
 	httpPort := flag.String("http", "8001", "HTTP port for Client communication")
-	// Take template url during production as parameter for request forwarding
-	// template := flag.String("url-template", "http://localhost:800%d", "Template for peer URLs")
-	template := "http://localhost:%d"
+	template := flag.String("peer-template", "http://kv-%d:8001", "Template for peer URLs")
+
 	flag.Parse()
 
 	peerList := strings.Split(*peerAdds, ",")
@@ -117,7 +116,7 @@ func main() {
 					http.Error(w, "Cluster in leadership transition", http.StatusServiceUnavailable)
 					return
 				}
-				leaderUrl := fmt.Sprintf(template, 8001+leaderId)
+				leaderUrl := fmt.Sprintf(*template, leaderId)
 				fmt.Println("leaderURl: ", leaderUrl)
 				target := fmt.Sprintf("%s/put?key=%s&val=%s", leaderUrl, key, val)
 				http.Redirect(w, r, target, http.StatusTemporaryRedirect)
