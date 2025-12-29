@@ -153,7 +153,7 @@ func (rf *Raft) ticker() {
 			rf.sendHeartBeats()
 		} else {
 			// a randomized timeout after which election starts
-			electionTimeout := time.Duration(300+rand.Intn(300)) * time.Millisecond
+			electionTimeout := time.Duration(800+rand.Intn(200)) * time.Millisecond
 			if time.Since(lastReset) > electionTimeout {
 				rf.startElection()
 			}
@@ -225,6 +225,9 @@ func (rf *Raft) startElection() {
 }
 
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+	if rf.peers[server] == nil {
+		return false
+	}
 	pbArgs := &pb.RequestVoteRequest{
 		Term:         int32(args.Term),
 		CandidateId:  int32(args.CandidateId),
@@ -237,10 +240,16 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 	pbReply, err := rf.peers[server].RequestVote(ctx, pbArgs)
 	if err != nil {
+		fmt.Printf(" [ERROR] Node %d failed to request vote from Node %d: %v\n", rf.me, server, err)
 		return false
 	}
 	reply.Term = int(pbReply.Term)
 	reply.VoteGranted = pbReply.VoteGranted
+	if !reply.VoteGranted {
+		fmt.Printf(" [DENIED] Node %d refused vote to Node %d. (My Term: %d, Peer Term: %d)\n", server, rf.me, args.Term, reply.Term)
+	} else {
+		fmt.Printf(" [GRANTED] Node %d voted for Node %d!\n", server, rf.me)
+	}
 	return true
 }
 

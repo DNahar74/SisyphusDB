@@ -84,7 +84,11 @@ func main() {
 	peerList := strings.Split(*peerAdds, ",")
 	var raftClients []pb.RaftServiceClient
 
-	for _, addr := range peerList {
+	for i, addr := range peerList {
+		if i == *id {
+			raftClients = append(raftClients, nil)
+			continue
+		}
 		conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if err != nil {
 			log.Fatalf("did not connect to peer %s: %v", addr, err)
