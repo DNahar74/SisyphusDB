@@ -55,8 +55,8 @@ func (ww *responseWriterWrapper) WriteHeader(code int) {
 var proxyClient = &http.Client{
 	Timeout: time.Second * 5,
 	Transport: &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 100,
+		MaxIdleConns:        1000,
+		MaxIdleConnsPerHost: 1000,
 		IdleConnTimeout:     90 * time.Second,
 	},
 }
@@ -73,7 +73,7 @@ func forwardToLeader(w http.ResponseWriter, r *http.Request, leaderUrl string) {
 	resp, err := proxyClient.Do(req)
 
 	// Check for both error AND nil response
-	if err != nil || resp == nil {
+	if err != nil {
 		// Optional: Log this error so you can see it in kubectl logs
 		log.Printf("Proxy Error: %v", err)
 		http.Error(w, "Failed to forward request to leader", http.StatusServiceUnavailable)

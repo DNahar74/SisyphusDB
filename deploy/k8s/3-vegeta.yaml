@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: load-generator
+spec:
+  containers:
+    - name: vegeta
+      image: peterevans/vegeta
+      command: ["sh", "-c", "echo 'GET http://kv-0.kv-raft:8001/put?key=load&val=test' | vegeta attack -duration=10s -rate=2000 | vegeta report"]
+  restartPolicy: Never

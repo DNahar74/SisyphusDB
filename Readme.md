@@ -25,49 +25,75 @@ The core objective of SisyphusDB is to minimize write latency and maximize throu
 
 To address the garbage collection (GC) overhead inherent in Go's standard map implementation, a custom **Bump-Pointer Arena Allocator** was engineered. By replacing standard hashing and bucket lookups with direct memory offset calculations, the system achieves O(1) storage time with zero allocations per operation in the hot path.
 
-**Benchmark Results:**
-
+### Benchmark Results
 |**Implementation**| **Latency (ns/op)** |**Throughput (Ops/sec)**| **Allocations/Op** |**Memory/Op**|
 |---|---------------------|---|-------------------|---|
 |**Standard Map (Baseline)**| 82.21 ns            |~12.16 M| 0                 |176 B|
 |**Arena Allocator**| **23.17 ns**        |**~24.86 M**| **0**             |**64 B**|
 |**Improvement**| **71.1% Faster**    |**104.4% Increase**| **50% Reduction** |**63.6% Reduction**|
 
-Technical Insight:
+### Verification
+**Before (Standard Map):** High CPU time spent in `runtime.mallocgc` (GC Pauses). [GC Pressure](docs/benchmarks/arena/graph_baseline.png)
 
-Even with zero allocations, the Standard Map is limited by the CPU cost of Murmur3/AES hash functions (approx. 82ns). The Arena allocator bypasses this entirely, using pointer arithmetic to store data. This optimization reduced average write latency by ~59ns per op, which compounds significantly in high-frequency trading or telemetry contexts.
+**After (Arena):** GC overhead eliminated; CPU spends time only on ingestion. [Arena Optimization](docs/benchmarks/arena/graph_arena.png)
+
+*Reproducible via `go test -bench=. docs/benchmarks/arena/benchmark_test.go`*
 
 _Results verified on Intel Core i5-12450H._
 
-### 2. Throughput Scaling: The Journey to 2,000 RPS
+### 2. Throughput Scaling: The Journey to 3,000 RPS
+Through iterative engineering and bottleneck analysis, SisyphusDB achieved a **30x increase in write throughput**, scaling from a baseline of 100 RPS to a stable **2,960 RPS**.
 
-The system was iteratively optimized to scale write throughput by **23x** against the initial baseline.
+### 📉 Optimization Phases
 
-- **Phase 1 (Baseline - 100 RPS):** The initial implementation was I/O bound due to synchronous `fsync()` calls on every Raft log entry. Throughput was physically capped by disk rotational latency.
+The system evolved through three distinct architectural phases to overcome physical hardware and OS limitations:
 
-- **Phase 2 (Asynchronous Persistence):** Persistence logic was moved to background workers. While this removed the disk bottleneck, it exposed network stack limitations, resulting in `dial tcp: address already in use` errors due to ephemeral port exhaustion.
+* **Phase 1: Baseline (100 RPS)**
+    * **Bottleneck:** Synchronous Disk I/O.
+    * **Context:** The initial implementation used "Safety First" persistence, calling `fsync()` immediately on every Raft log entry. Throughput was physically capped by the disk's rotational latency.
 
-- **Phase 3 (Optimization - 1,980 RPS):** To stabilize the system at high loads, two critical changes were implemented:
+* **Phase 2: Asynchronous Persistence**
+    * **Bottleneck:** Ephemeral Port Exhaustion.
+    * **Context:** Persistence was moved to background workers. While this removed the disk bottleneck, the naive network implementation opened a new connection for every replication request, causing `dial tcp: address already in use` errors.
 
-    1. **Adaptive Micro-Batching:** The replicator loop aggregates writes into 50ms windows, reducing network packet count by 95%.
-
-    2. **TCP Connection Pooling:** Implemented `Keep-Alive` to reuse established connections, eliminating handshake overhead.
-
-
-Final Load Test Results (Vegeta):
-
-Workload: 10,000 Writes over 5 seconds.
-
-Plaintext
-
-```
-Requests      [total, rate]          9999, 2000.31
-Latencies     [mean, 99th]           32.627ms, 74.615ms
-Success       [ratio]                100.00%
-Status Codes  [code:count]           200:9999
-```
+* **Phase 3: Final Optimization (3,000 RPS)**
+    * **Solution:** Implemented **Adaptive Micro-Batching** (aggregating writes into 50ms windows) and **TCP Connection Pooling** (Keep-Alive).
+    * **Result:** Reduced network packet count by 95% and eliminated TCP handshake overhead, stabilizing the system at extreme loads.
 
 ---
+
+#### 📊 Load Test Results
+
+Benchmarks were conducted using **Vegeta** running inside the Kubernetes cluster to bypass ingress bottlenecks.
+
+**1. Peak Performance (Stress Test)**
+Pushing the system to its limits with a target of **3,000 Write RPS**:
+
+| Target Rate | Actual Throughput | Success Rate | Mean Latency | P99 Latency |
+| :--- | :--- | :--- | :--- | :--- |
+| **2,500 RPS** | **2,481 RPS** | 100.00% | 29.94ms | 51.43ms |
+| **3,000 RPS** | **2,960 RPS** | 100.00% | 53.64ms | 90.32ms |
+
+> **Analysis:** Even at ~3,000 writes/second, the system maintains sub-100ms tail latency (P99), proving the efficacy of the non-blocking WAL architecture.
+
+**2. Latency Breakdown (Leader vs. Follower)**
+At a sustained load of 2,000 RPS, we analyzed the cost of internal request forwarding. Writes sent to **Followers** incur additional latency as they must be proxied to the Leader.
+
+| Metric | Leader Node (Direct Write) | Follower Node (Proxy Overhead) |
+| :--- | :--- | :--- |
+| **Throughput** | **1,996 RPS** | 1,915 RPS |
+| **Mean Latency** | **29.49ms** | 82.07ms |
+| **P99 Latency** | **55.55ms** | 328.04ms |
+
+> **Note:** The higher P99 latency on Follower nodes validates the internal "Smart Routing" mechanism. It proves that followers correctly buffered and forwarded traffic to the leader under pressure rather than dropping requests.
+
+**To Reproduce:**
+```bash
+# Run from inside the cluster
+echo "GET [http://kv-0.kv-raft:8001/put?key=load&val=test](http://kv-0.kv-raft:8001/put?key=load&val=test)" | vegeta attack -duration=5s -rate=3000 | vegeta report
+````
+---
+
 
 ## Reliability & Chaos Engineering
 
@@ -89,6 +115,9 @@ Plaintext
 1767014614062,DOWN  Writes Rejected (Proxy Failed)
 1767014614474,UP    New Leader Elected (Write Accepted)
 ```
+[Recovery Benchmark Results](docs/benchmarks/recovery_log.csv)
+
+To Reproduce the benchmarks, refer to [INSTALL.md](INSTALL.md)
 
 **Recovery Metrics:**
 

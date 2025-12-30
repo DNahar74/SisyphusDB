@@ -3,107 +3,181 @@
 This guide details how to build, deploy, and test SisyphusDB in local, Docker, and Kubernetes environments.
 
 ## 🛠️ Prerequisites
-* **Go:** 1.25+
-* **Docker:** 29.1+
-* **Kubernetes:** Minikube, Kind, or a Cloud Provider (EKS/GKE)
-* **Python 3:** (Required only for chaos testing scripts)
+
+- **Go:** 1.25+
+
+- **Docker:** 24.0+
+
+- **Kubernetes:** Minikube, Kind, or a Cloud Provider (EKS/GKE)
+
+- **Vegeta:** (Optional, for load testing)
+
 
 ---
 
-## 🚀 Option 1: Local Development (Standalone)
+##  Option 1: Local Development (Manual Cluster)
 
-Run a single node for development or debugging.
+The most reliable way to debug locally is running 3 separate processes. **Crucial:** Node IDs must match the port template pattern to prevent routing loops.
 
-### 1. Build the Binary
+### 1. Build the Binary (Optional)
+
+Bash
+
 ```
 go mod download
 go build -o kv-server cmd/server/main.go
-2. Run a Node
+```
+
+### 2. Run a 3-Node Cluster
+
+Open 3 separate terminal tabs and run the following commands. Note the HTTP port alignment (ID 0 -> 8000, ID 1 -> 8001, etc.).
+
+**Terminal 1 (Node 0 - Leader Candidate)**
+
 Bash
 
-# Usage: ./kv-server -id <node_id> -port <raft_port> -http <client_port> -peers <peer_list>
-./kv-server -id 0 -port 5001 -http 8001
-🐳 Option 2: Docker Compose (Local Cluster)
-Spin up a 3-node cluster locally for integration testing.
 ```
-1. Start the Cluster
+go run cmd/server/main.go \
+  -id 0 \
+  -port 5001 \
+  -http 8000 \
+  -peers :5001,:5002,:5003 \
+  -peer-template "http://localhost:800%d"
 ```
+
+**Terminal 2 (Node 1)**
+
+Bash
+
+```
+go run cmd/server/main.go \
+  -id 1 \
+  -port 5002 \
+  -http 8001 \
+  -peers :5001,:5002,:5003 \
+  -peer-template "http://localhost:800%d"
+```
+
+**Terminal 3 (Node 2)**
+
+Bash
+
+```
+go run cmd/server/main.go \
+  -id 2 \
+  -port 5003 \
+  -http 8002 \
+  -peers :5001,:5002,:5003 \
+  -peer-template "http://localhost:800%d"
+```
+
+### 3. Verify Connectivity
+
+Test a write to the Leader (usually Node 0 or 1):
+
+Bash
+
+```
+curl "http://localhost:8000/put?key=test&val=success"
+```
+
+---
+
+## 🐳 Option 2: Docker Compose
+
+Spin up a containerized 3-node cluster for integration testing.
+
+Bash
+
+```
+# Start the cluster
 docker-compose up --build -d
-```
-2. Verify Connectivity
-The cluster exposes the following endpoints:
 
+# View logs
+docker-compose logs -f
 ```
-Node 0: http://localhost:8001
-Node 1: http://localhost:8002
-Node 2: http://localhost:8003
-```
-Test a write operation:
 
-```
-curl "http://localhost:8001/put?key=test&val=success"
-```
-☸️ Option 3: Kubernetes Deployment (Production-Like)
+---
+
+## ☸️ Option 3: Kubernetes Deployment
+
 Deploy SisyphusDB as a StatefulSet with stable network identities.
 
-1. Build & Load Image
-If using Minikube or Kind, load the image directly to the node cache:
+### 1. Build & Load Image
+
+If using Minikube or Kind, load the image directly to the node cache so K8s can find it:
+
+Bash
 
 ```
 docker build -t sisyphusdb:v1 .
 minikube image load sisyphusdb:v1
 ```
-2. Apply Manifests
-Deploy the Headless Service and StatefulSet:
+
+### 2. Apply Manifests
+
+Deploy the Headless Service, StatefulSet, and ConfigMaps:
+
+Bash
 
 ```
-kubectl apply -f deploy/service.yaml
-kubectl apply -f deploy/statefulset.yaml
+kubectl apply -f deploy/k8s
 ```
-3. Verify Deployment
+
+### 3. Verify Deployment
+
 Wait for all 3 pods to become Ready (1/1):
 
+Bash
+
 ```
-kubectl get pods -l app=SisyphusDB -w
+kubectl get pods -l app=sisyphusdb -w
 ```
 
-Expected Output:
+_Expected Output:_
 
-```Plaintext
+Plaintext
 
+```
 NAME   READY   STATUS    RESTARTS   AGE
 kv-0   1/1     Running   0          45s
 kv-1   1/1     Running   0          30s
 kv-2   1/1     Running   0          15s
 ```
 
-🧪 Testing & Verification
-Running Benchmarks
-To reproduce the performance metrics (Arena vs. Map):
-
-```
-go test -bench=. -benchmem ./docs/benchmarks/arena
-```
-Reproducing Chaos Tests
-This script continuously writes data while you simulate node failures.
-
-Deploy the Tester Pod:
-
-```
-kubectl run tester --image=python:3.9-alpine -i --tty -- sh
-apk add curl
-```
-
-Run the Monitor Script (inside the pod): (Paste the contents of docs/benchmarks/measure_recovery.py here)
-
-```Bash
-python3 measure_recovery.py
-```
-Inject Failure (from your host terminal):
-
-```Bash
-kubectl delete pod kv-0
-```
 ---
 
+## 🧪 Benchmarking & Performance
 
+**Warning:** Do not use `kubectl port-forward` for load testing. It acts as a single-threaded bottleneck and will timeout at >150 RPS.
+
+To reproduce the **2,000+ RPS** benchmark, run the load generator **inside** the cluster:
+
+### 1. Launch a Shell inside the Cluster
+
+Bash
+
+```
+kubectl run vegeta-shell --rm -i --tty --image=peterevans/vegeta -- sh
+```
+
+### 2. Run the Stress Test
+
+Once inside the pod prompt (`/ #`), run the attack against the Service DNS:
+
+Bash
+
+```
+# Attack the Leader (kv-0) at 3,000 RPS
+echo "GET http://kv-0.kv-raft:8001/put?key=load&val=test" | vegeta attack -duration=5s -rate=3000 | vegeta report
+```
+
+### 3. (Optional) Local Benchmarking
+
+If running **Option 1 (Manual Cluster)**, you can test directly from your host machine:
+
+Bash
+
+```
+echo "GET http://localhost:8000/put?key=load&val=test" | vegeta attack -duration=5s -rate=2000 | vegeta report
+```
