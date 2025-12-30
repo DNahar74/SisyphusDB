@@ -25,11 +25,12 @@ type LogEntry struct {
 }
 
 type Raft struct {
-	mu       sync.Mutex
-	peers    []pb.RaftServiceClient // RPC clients to talk to other nodes
-	me       int                    // this peer's index into peers[]
-	leaderId int
-	applyCh  chan LogEntry // Channel to send committed data to the KV Store
+	mu        sync.Mutex
+	peers     []pb.RaftServiceClient // RPC clients to talk to other nodes
+	me        int                    // this peer's index into peers[]
+	leaderId  int
+	applyCh   chan LogEntry // Channel to send committed data to the KV Store
+	triggerCh chan struct{}
 
 	//persistent states
 	currentTerm int
@@ -78,11 +79,13 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	rf.log = append(rf.log, LogEntry{index, term, cmdBytes})
 
-	rf.persist()
 	fmt.Printf("[Start] Leader %d received command at Index %d, Term %d\n", rf.me, index, term)
 
 	//trigger replication
-	go rf.sendHeartBeats()
+	select {
+	case rf.triggerCh <- struct{}{}:
+	default:
+	}
 	return index, term, true
 }
 
@@ -90,22 +93,29 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) applier() {
 	for {
 		time.Sleep(10 * time.Millisecond)
+
 		rf.mu.Lock()
+		if rf.commitIndex <= rf.lastApplied {
+			rf.mu.Unlock()
+			continue
+		}
 
-		if rf.commitIndex > rf.lastApplied {
+		// Snapshot all ready entries into a local slice
+		var entriesToApply []LogEntry
+		for rf.lastApplied < rf.commitIndex {
 			rf.lastApplied++
-			entry := rf.log[rf.lastApplied]
+			entriesToApply = append(entriesToApply, rf.log[rf.lastApplied])
+		}
+		rf.mu.Unlock()
 
+		for _, entry := range entriesToApply {
 			msg := LogEntry{
 				Command: entry.Command,
 				Index:   entry.Index,
 				Term:    entry.Term,
 			}
-			rf.mu.Unlock()
 			// send to kv store
 			rf.applyCh <- msg
-		} else {
-			rf.mu.Unlock()
 		}
 	}
 }
@@ -115,7 +125,7 @@ func Make(peers []pb.RaftServiceClient, me int, applyCh chan LogEntry) *Raft {
 	rf.peers = peers
 	rf.me = me
 	rf.applyCh = applyCh
-
+	rf.triggerCh = make(chan struct{}, 1)
 	rf.state = Follower
 	rf.currentTerm = 0
 	rf.votedFor = -1
@@ -135,7 +145,24 @@ func Make(peers []pb.RaftServiceClient, me int, applyCh chan LogEntry) *Raft {
 
 	go rf.ticker()
 	go rf.applier()
+	go rf.replicator()
 	return rf
+}
+func (rf *Raft) replicator() {
+	for {
+		select {
+		case <-rf.triggerCh:
+			// Instead of sending immediately, we sleep for 10ms.
+			// This allows multiple 'Start()' calls to pile up entries in rf.log.
+			time.Sleep(30 * time.Millisecond)
+
+			rf.mu.Lock()
+			rf.persist()
+			rf.mu.Unlock()
+			// Now we send ONE RPC containing ALL the new entries
+			rf.sendHeartBeats()
+		}
+	}
 }
 
 func (rf *Raft) ticker() {

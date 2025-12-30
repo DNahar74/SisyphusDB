@@ -3,6 +3,7 @@ package raft
 import (
 	pb "KV-Store/proto"
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -143,7 +144,9 @@ func (rf *Raft) sendHeartBeats() {
 				}
 				entries = append(entries, rf.log[nextIdx:endIdx]...)
 			}
-
+			if len(entries) > 1 {
+				fmt.Printf("Batched RPC sent with %d entries to Node %d!\n", len(entries), i)
+			}
 			args := AppendEntriesArgs{
 				Term:         term,
 				LeaderId:     rf.me,
@@ -260,5 +263,8 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	// 3. Unpack Response
 	reply.Term = int(pbReply.Term)
 	reply.Success = pbReply.Success
+	reply.ConflictTerm = int(pbReply.ConflictTerm)
+	reply.ConflictIndex = int(pbReply.ConflictIndex)
+
 	return true
 }

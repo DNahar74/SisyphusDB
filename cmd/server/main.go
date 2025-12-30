@@ -51,24 +51,47 @@ func (ww *responseWriterWrapper) WriteHeader(code int) {
 	ww.ResponseWriter.WriteHeader(code)
 }
 
+// Define a global client to reuse TCP connections (Keep-Alive)
+var proxyClient = &http.Client{
+	Timeout: time.Second * 5,
+	Transport: &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 100,
+		IdleConnTimeout:     90 * time.Second,
+	},
+}
+
 // Proxy function
 func forwardToLeader(w http.ResponseWriter, r *http.Request, leaderUrl string) {
 	req, err := http.NewRequest(r.Method, leaderUrl, r.Body)
 	if err != nil {
 		http.Error(w, "Failed to create request forwarding", http.StatusInternalServerError)
+		return
 	}
-	client := &http.Client{Timeout: time.Second * 5}
-	resp, err := client.Do(req)
+
+	// Set a lower timeout for internal cluster communication to fail fast
+	resp, err := proxyClient.Do(req)
+
+	// Check for both error AND nil response
 	if err != nil || resp == nil {
-		http.Error(w, "Failed to create request forwarding", http.StatusInternalServerError)
+		// Optional: Log this error so you can see it in kubectl logs
+		log.Printf("Proxy Error: %v", err)
+		http.Error(w, "Failed to forward request to leader", http.StatusServiceUnavailable)
+		return
 	}
+
+	defer resp.Body.Close()
+	// -----------------------------
+
 	for k, v := range resp.Header {
 		w.Header()[k] = v
 	}
 	w.WriteHeader(resp.StatusCode)
+
 	_, err = io.Copy(w, resp.Body)
 	if err != nil {
-		http.Error(w, "Failed to write response forwarding", http.StatusInternalServerError)
+		// Just log it; we can't write http.Error because headers are already sent
+		log.Printf("Error copying response body: %v", err)
 	}
 }
 
@@ -137,6 +160,7 @@ func main() {
 				leaderId := store.Raft.GetLeader()
 				if leaderId == -1 {
 					http.Error(w, "Leader not found", http.StatusNotFound)
+					return
 				}
 				//cluster error check
 				if leaderId == *id {
