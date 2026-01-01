@@ -2,7 +2,7 @@
 
 SisyphusDB is a high-performance distributed database designed for strong consistency and high availability. It leverages modern distributed system patterns to ensure data reliability and speed.
 
-A distributed key-value store engineered for strong consistency and high availability, capable of handling **2,000+ RPS** with **<35ms latency**.
+A distributed key-value store engineered for strong consistency and high availability, capable of handling **3,000+ RPS** with **<55ms latency**.
 
 - **Core Consensus (Raft):**
     
