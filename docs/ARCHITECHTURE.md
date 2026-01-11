@@ -9,9 +9,7 @@ The final system consists of a cluster of nodes (typically 3 or 5) functioning a
 ### Layer 1: The API & Network Layer (Entry Point)
 
 - **gRPC Interface:** Replaces simple HTTP/TCP. Uses Protocol Buffers for strict schemas and high-performance serialization.
-
-- **Custom Protocol (RESP):** (Optional) Implementation of the Redis Serialization Protocol, allowing the database to interface with standard Redis clients.
-
+  
 
 ### Layer 2: The Distribution Layer (The "Brain")
 
@@ -25,9 +23,7 @@ The final system consists of a cluster of nodes (typically 3 or 5) functioning a
 ### Layer 3: The Storage Layer (The "Muscle")
 
 - **LSM Tree Engine:** The storage pipeline consisting of `MemTable` $\to$ `WAL` $\to$ `SSTable`.
-
-- **Block Cache:** An in-memory LRU cache storing uncompressed data blocks to accelerate read performance.
-
+- 
 - **Compactor:** A background process that merges old SSTables (e.g., Level 0 $\to$ Level 1) to reclaim space and solve write/read amplification.
 
 
@@ -43,9 +39,7 @@ The following narratives describe how the finished architecture handles requests
 
 **Scenario:** User sends `PUT key: "user:1", val: "Avis"`
 
-1. **Routing:** The client hashes "user:1", determines it belongs to **Shard 1**, and sends a gRPC request to the **Raft Leader** of Shard 1.
-
-2. **Consensus (Raft):**
+1. **Consensus (Raft):**
 
     - The Leader appends the command to its **Raft Log** (distinct from the Storage WAL).
 
@@ -53,11 +47,11 @@ The following narratives describe how the finished architecture handles requests
 
     - Followers persist the entry and return an Acknowledgment (ACK).
 
-3. **Commit:** Once a Majority (Quorum) of ACKs is received, the Leader marks the entry as **Committed**.
+2. **Commit:** Once a Majority (Quorum) of ACKs is received, the Leader marks the entry as **Committed**.
 
-4. **Execution:** The Leader applies the committed entry to its local **LSM Tree** (MemTable/WAL).
+3. **Execution:** The Leader applies the committed entry to its local **LSM Tree** (MemTable/WAL).
 
-5. **Response:** The Leader replies "OK" to the client.
+4. **Response:** The Leader replies "success" to the client.
 
 
 ### The Read Path (GET)
@@ -85,23 +79,15 @@ The following narratives describe how the finished architecture handles requests
 
 To achieve **Linearizability** (Strict Consistency) without blocking the internal Raft loop, the system runs two completely decoupled processes. Go Channels are used to bridge these worlds.
 
-### The Two Worlds
-
-1. **The Front Desk (The `Put` Function):** Handles the impatient client waiting for a receipt.
-
-2. **The Back Office (The `readAppliedLogs` Loop):** Processes immutable orders coming from headquarters (Raft).
-
-
 ### The Channels
 
-- **`applyChan` (Raft $\to$ Store):** The **Conveyor Belt**. It delivers **Committed** data. Once a command appears here, it is "Set in Stone" and cannot be changed. The cluster has agreed on it.
+- **`applyChan` (Raft $\to$ Store):** It delivers **Committed** data. Once a command appears here, it is "Set in Stone" and cannot be changed. The cluster has agreed on it.
 
-- **`notifyChan` (Store $\to$ Client):** The **Parking Spot**. Created for a specific request, used once to wake up the blocked client, and then destroyed.
+- **`notifyChan` (Store $\to$ Client):** Created for a specific request, used once to wake up the blocked client, and then destroyed.
 
 
-### The "Grand Loop" (Linearization Workflow)
+### Linearization Workflow
 
-This flow guarantees that "Success" means "Saved on multiple nodes."
 
 1. **Proposal:** Client calls `Put()`. The Store asks Raft to start the process and receives a future Log Index (e.g., 100).
 
@@ -139,25 +125,7 @@ When a Leader crashes, Raft elects a new one in **<600ms**. However, Kubernetes 
 
 ---
 
-## 5. Detailed Feature Breakdown
-
-The feature set targets a "Senior Engineer" level of distributed systems complexity.
-
-|**Feature**|**Justification ("Senior" Level)**|**Status**|
-|---|---|---|
-|**LSM Tree Storage**|Understanding of write-heavy storage engines vs. B-Trees.|✅ Done|
-|**WAL & Crash Recovery**|Knowledge of durability, `fsync`, and file system integrity.|✅ Done|
-|**SSTables + Sparse Index**|Optimization of disk I/O and binary search algorithms.|✅ Done|
-|**Bloom Filters**|Probabilistic structures to prevent expensive disk reads.|✅ Done|
-|**Leveled Compaction**|Solving Write/Read Amplification problems.|✅ Done|
-|**Raft Consensus**|Implementation of distributed consistency (CAP Theorem).|✅ Done|
-|**gRPC & Protobuf**|Industry standard for microservices communication.|✅ Done|
-|**Prometheus Metrics**|Observability ("Building runnable production systems").|✅ Done|
-|**Snapshotting**|State compression for fast node recovery/joining.|⭕ Future|
-
----
-
-## 6. Implementation Roadmap
+## 5. Implementation Roadmap
 
 The development of SisyphusDB follows a phased approach to manage complexity.
 
@@ -179,8 +147,3 @@ The development of SisyphusDB follows a phased approach to manage complexity.
 
     - Connect Raft to the FSM (Finite State Machine).
 
-- **Phase 4: Sharding (The Scale)**
-
-    - Implement a Gateway/Coordinator.
-
-    - Route requests via Consistent Hashing.
