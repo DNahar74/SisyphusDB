@@ -4,6 +4,10 @@ import (
 	pb "KV-Store/proto" // Import the generated Proto code
 	"KV-Store/raft"     // Import your Raft logic
 	"context"
+	"log"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // RaftServer acts as the bridge.
@@ -18,9 +22,30 @@ func NewRaftServer(rf *raft.Raft) *RaftServer {
 	return &RaftServer{rf: rf}
 }
 
-// RequestVote is called by gRPC when another node asks for a vote
+func (s *RaftServer) ensureReady(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		switch err {
+		case context.Canceled:
+			return status.Error(codes.Canceled, "request canceled by client")
+		case context.DeadlineExceeded:
+			return status.Error(codes.DeadlineExceeded, "request deadline exceeded")
+		default:
+			return status.Error(codes.Internal, "request context error")
+		}
+	}
+	if s == nil || s.rf == nil {
+		return status.Error(codes.FailedPrecondition, "raft service not initialized")
+	}
+	return nil
+}
+
 func (s *RaftServer) RequestVote(ctx context.Context, req *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
-	// 1. Unpack Protobuf -> Go Struct
+	if err := s.ensureReady(ctx); err != nil {
+		return nil, err
+	}
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request cannot be nil")
+	}
 	args := &raft.RequestVoteArgs{
 		Term:         int(req.Term),
 		CandidateId:  int(req.CandidateId),
@@ -29,21 +54,23 @@ func (s *RaftServer) RequestVote(ctx context.Context, req *pb.RequestVoteRequest
 	}
 	var reply raft.RequestVoteReply
 
-	// 2. Call your Raft Logic
 	s.rf.RequestVote(args, &reply)
 
-	// 3. Pack Go Struct -> Protobuf Response
 	return &pb.RequestVoteResponse{
 		Term:        int32(reply.Term),
 		VoteGranted: reply.VoteGranted,
 	}, nil
 }
 
-// AppendEntries is called by gRPC when the Leader sends logs/heartbeats
 func (s *RaftServer) AppendEntries(ctx context.Context, req *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
-	// 1. Unpack Protobuf -> Go Struct
-	// We have to loop to convert the log entries slice
-	var entries []raft.LogEntry
+	if err := s.ensureReady(ctx); err != nil {
+		return nil, err
+	}
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request cannot be nil")
+	}
+
+	entries := make([]raft.LogEntry, 0, len(req.Entries))
 	for _, e := range req.Entries {
 		entries = append(entries, raft.LogEntry{
 			Term:    int(e.Term),
@@ -62,12 +89,16 @@ func (s *RaftServer) AppendEntries(ctx context.Context, req *pb.AppendEntriesReq
 	}
 	var reply raft.AppendEntriesReply
 
-	// 2. Call your Raft Logic
 	s.rf.AppendEntries(args, &reply)
+	if ctx.Err() != nil {
+		log.Printf("raft AppendEntries finished but context ended: %v", ctx.Err())
+		return nil, status.Error(codes.Canceled, "request context ended")
+	}
 
-	// 3. Pack Go Struct -> Protobuf Response
 	return &pb.AppendEntriesResponse{
-		Term:    int32(reply.Term),
-		Success: reply.Success,
+		Term:          int32(reply.Term),
+		Success:       reply.Success,
+		ConflictIndex: int32(reply.ConflictIndex),
+		ConflictTerm:  int32(reply.ConflictTerm),
 	}, nil
 }
