@@ -25,10 +25,26 @@
 - **LSM-Tree Storage** — LevelDB-style tiered compaction with Bloom filters for 95% fewer disk lookups
 - **3,000+ Write RPS** — Achieved through batched RPCs, arena-based memory pooling, and async persistence
 - **Kubernetes Native** — StatefulSet deployment with persistent volumes and Prometheus/Grafana monitoring
+- **CLI Client** — Full-featured command-line interface with configuration management, metrics, and testing tools
 
 ---
 
 ## Quick Start
+
+### CLI Client
+```bash
+# Build the CLI
+go build -o sicli ./cmd/cli
+
+# Basic operations
+sicli put hello world
+sicli get hello
+sicli delete hello
+
+# Configure server
+sicli config set --server-url http://localhost:8081
+sicli metrics
+```
 
 ### Local (Docker Compose)
 ```bash
@@ -141,7 +157,9 @@ kubectl port-forward svc/grafana 3000:3000
 ## Project Structure
 
 ```
-├── cmd/server/       # Entry point
+├── cmd/
+│   ├── server/       # HTTP server entry point
+│   └── cli/          # CLI client (sicli)
 ├── raft/             # Consensus implementation
 ├── kv/               # Storage engine (LSM-tree)
 ├── pkg/
