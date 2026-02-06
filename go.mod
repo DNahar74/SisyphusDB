@@ -1,4 +1,4 @@
-module SisyphusDB
+KV-Store
 
 go 1.25
 
