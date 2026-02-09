@@ -1,55 +1,81 @@
 package raft
 
 import (
-	"bytes"
-	"encoding/gob"
 	"fmt"
-	"os"
 )
 
+// persist saves Raft log entries to WAL
 func (rf *Raft) persist() {
-	rf.reportMetrics()
-	w := new(bytes.Buffer)
-	e := gob.NewEncoder(w)
+	if rf.wal == nil {
+		return
+	}
 
-	_ = e.Encode(rf.currentTerm)
-	_ = e.Encode(rf.votedFor)
-	_ = e.Encode(rf.log)
+	// Only persist if we have log entries
+	if len(rf.log) > 0 {
+		// Convert only new entries (WAL.AppendEntries handles deduplication)
+		walEntries := make([]WALEntry, 0, len(rf.log))
+		for _, entry := range rf.log {
+			walEntries = append(walEntries, WALEntry{
+				RecordType: RecordTypeLog,
+				Index:      uint32(entry.Index),
+				Term:       uint32(entry.Term),
+				Command:    entry.Command,
+			})
+		}
 
-	data := w.Bytes()
-
-	filename := fmt.Sprintf("raft_state_%d.gob", rf.me)
-
-	err := os.WriteFile(filename, data, 0644)
-	if err != nil {
-		fmt.Printf("raft persist err node %d: %s", rf.me, err)
+		// WAL handles skipping already-persisted entries internally
+		rf.wal.AppendEntries(walEntries, 0)
 	}
 }
 
-func (rf *Raft) readPersist() {
-	filename := fmt.Sprintf("raft_state_%d.gob", rf.me)
-
-	data, err := os.ReadFile(filename)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return
-		}
-		fmt.Printf("raft readPersist err node %d: %s", rf.me, err)
+// persistState saves Raft hard state (term, vote, commit) to WAL: only called when these values actually change
+func (rf *Raft) persistState() {
+	if rf.wal == nil {
 		return
 	}
-	r := bytes.NewBuffer(data)
-	d := gob.NewDecoder(r)
 
-	var currentTerm, votedFor int
-	var logs []LogEntry
+	rf.wal.PersistHardState(
+		uint32(rf.currentTerm),
+		uint32(rf.votedFor),
+		uint32(rf.commitIndex),
+	)
+}
 
-	if d.Decode(&currentTerm) != nil ||
-		d.Decode(&votedFor) != nil ||
-		d.Decode(&logs) != nil {
-		fmt.Printf("Error decoding state for node %d\n", rf.me)
-	} else {
-		rf.currentTerm = currentTerm
-		rf.votedFor = votedFor
-		rf.log = logs
+// readPersist restores Raft state from the WAL
+func (rf *Raft) readPersist() {
+	if rf.wal == nil {
+		fmt.Printf("WAL not initialized for node %d\n", rf.me)
+		return
+	}
+
+	walEntries, hardState, err := rf.wal.RecoverEntries()
+	if err != nil {
+		fmt.Printf("raft readPersist WAL recovery err node %d: %s\n", rf.me, err)
+		return
+	}
+
+	if len(walEntries) > 0 {
+		// Clear existing log completely and rebuild from WAL
+		rf.log = make([]LogEntry, 0, len(walEntries))
+		
+		// Restore log entries from WAL (includes sentinel at index 0)
+		for _, walEntry := range walEntries {
+			if walEntry.RecordType == RecordTypeLog {
+				rf.log = append(rf.log, LogEntry{
+					Index:   int(walEntry.Index),
+					Term:    int(walEntry.Term),
+					Command: walEntry.Command,
+				})
+			}
+		}
+	}
+
+	// Restore hard state if available
+	if hardState.Term > 0 {
+		rf.currentTerm = int(hardState.Term)
+		rf.votedFor = int(hardState.Vote)
+		rf.commitIndex = int(hardState.Commit)
+		fmt.Printf("Node %d recovered hard state: Term=%d, Vote=%d, Commit=%d\n",
+			rf.me, rf.currentTerm, rf.votedFor, rf.commitIndex)
 	}
 }

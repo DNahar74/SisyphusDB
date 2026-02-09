@@ -40,7 +40,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.votedFor = -1
 	rf.leaderId = args.LeaderId
 	rf.lastResetTime = time.Now()
-	rf.persist()
+	rf.persistState()
 	reply.Term = rf.currentTerm
 
 	// Log Consistency Check
@@ -100,6 +100,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.commitIndex = args.LeaderCommit
 		} else {
 			rf.commitIndex = lastNewIndex
+		}
+		// Signal applier
+		select {
+		case rf.commitCh <- struct{}{}:
+		default:
 		}
 	}
 
@@ -193,7 +198,11 @@ func (rf *Raft) sendHeartBeats() {
 						}
 						if count > len(rf.peers)/2 && rf.log[N].Term == rf.currentTerm {
 							rf.commitIndex = N
-							// Notify Apply Channel here if needed
+							// Signal applier
+							select {
+							case rf.commitCh <- struct{}{}:
+							default:
+							}
 							break
 						}
 					}
