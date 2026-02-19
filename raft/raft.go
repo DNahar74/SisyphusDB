@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"os"
 	"sync"
 	"time"
 )
@@ -25,12 +26,24 @@ type LogEntry struct {
 	Command []byte
 }
 
+// ApplyMsg is sent to the service (KVStore) when a log entry is committed or a snapshot is installed.
+type ApplyMsg struct {
+	CommandValid bool
+	Command      []byte
+	CommandIndex int
+
+	SnapshotValid bool
+	Snapshot      []byte
+	SnapshotTerm  int
+	SnapshotIndex int
+}
+
 type Raft struct {
 	mu        sync.Mutex
 	peers     []pb.RaftServiceClient // RPC clients to talk to other nodes
 	me        int
 	leaderId  int
-	applyCh   chan LogEntry
+	applyCh   chan ApplyMsg
 	triggerCh chan struct{}
 	commitCh  chan struct{}
 
@@ -41,6 +54,7 @@ type Raft struct {
 	wal               *WAL
 	lastIncludedIndex int // Index of the last entry included in the snapshot
 	lastIncludedTerm  int // Term of the last entry included in the snapshot
+	snapshotFile      *os.File
 
 	//volatile state on all servers
 	commitIndex int // index of highest log entry known to be committed
@@ -133,12 +147,16 @@ func (rf *Raft) applier() {
 		rf.mu.Unlock()
 
 		for _, entry := range entriesToApply {
-			rf.applyCh <- entry
+			rf.applyCh <- ApplyMsg{
+				CommandValid: true,
+				Command:      entry.Command,
+				CommandIndex: entry.Index,
+			}
 		}
 	}
 }
 
-func Make(peers []pb.RaftServiceClient, me int, applyCh chan LogEntry) *Raft {
+func Make(peers []pb.RaftServiceClient, me int, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
 	rf.peers = peers
 	rf.me = me
