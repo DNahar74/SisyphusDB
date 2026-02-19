@@ -32,13 +32,15 @@ type Raft struct {
 	leaderId  int
 	applyCh   chan LogEntry
 	triggerCh chan struct{}
-	commitCh  chan struct{} 
+	commitCh  chan struct{}
 
 	//persistent states
-	currentTerm int
-	votedFor    int
-	log         []LogEntry
-	wal         *WAL 
+	currentTerm       int
+	votedFor          int
+	log               []LogEntry
+	wal               *WAL
+	lastIncludedIndex int // Index of the last entry included in the snapshot
+	lastIncludedTerm  int // Term of the last entry included in the snapshot
 
 	//volatile state on all servers
 	commitIndex int // index of highest log entry known to be committed
@@ -64,6 +66,29 @@ func (rf *Raft) GetLeader() int {
 	return rf.leaderId
 }
 
+// getLastLogIndex returns index of the last log in the snapshot
+func (rf *Raft) getLastLogIndex() int {
+	return rf.lastIncludedIndex + len(rf.log) - 1
+}
+
+// getLastLogTerm returns the term of the last log entry written to the snapshot
+func (rf *Raft) getLastLogTerm() int {
+	if len(rf.log) == 0 {
+		// If the log is empty, return the term of the last included entry (i.e. the term in the last snapshot)
+		return rf.lastIncludedTerm
+	}
+	return rf.log[len(rf.log)-1].Term
+}
+
+// getLastLogEntry returns the last log entry written to the snapshot
+func (rf *Raft) getLastLogEntry() LogEntry {
+	if len(rf.log) == 0 {
+		// If the log is empty, return a dummy entry with the last included index and term (we can't guess the command because we just have the snapshot)
+		return LogEntry{Index: rf.lastIncludedIndex, Term: rf.lastIncludedTerm}
+	}
+	return rf.log[len(rf.log)-1]
+}
+
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -73,7 +98,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 
 	//create log entry
-	index := len(rf.log)
+	index := rf.getLastLogIndex() + 1
 	term := rf.currentTerm
 	// TODO: Use type assertion or serialization later here
 	cmdBytes, ok := command.([]byte)
@@ -125,8 +150,8 @@ func Make(peers []pb.RaftServiceClient, me int, applyCh chan LogEntry) *Raft {
 	rf.votedFor = -1
 	rf.leaderId = -1
 	rf.log = make([]LogEntry, 0)
-
-	rf.log = append(rf.log, LogEntry{Term: 0})
+	rf.lastIncludedIndex = 0
+	rf.lastIncludedTerm = 0
 
 	rf.commitIndex = 0
 	rf.lastApplied = 0
@@ -150,6 +175,21 @@ func Make(peers []pb.RaftServiceClient, me int, applyCh chan LogEntry) *Raft {
 	go rf.applier()
 	go rf.replicator()
 	return rf
+}
+
+// getLogEntry returns the log entry at the given absolute index.
+//* This expects the index to be present in the current log ( >= LastIncludedIndex ).
+func (rf *Raft) getLogEntry(index int) LogEntry {
+	if index == rf.lastIncludedIndex {
+		// If the index is equal to the last included index, return a dummy entry with that index & term
+		return LogEntry{Index: rf.lastIncludedIndex, Term: rf.lastIncludedTerm}
+	}
+	offset := index - rf.lastIncludedIndex - 1
+	// If the offset is negative, it means the index is not in the current log (i.e. it's in the snapshot)
+	if offset < 0 {
+		return LogEntry{}
+	}
+	return rf.log[offset]
 }
 
 func (rf *Raft) replicator() {
@@ -197,7 +237,7 @@ func (rf *Raft) startElection() {
 	rf.currentTerm++
 	rf.votedFor = rf.me
 	rf.lastResetTime = time.Now()
-	rf.persistState() 
+	rf.persistState()
 
 	term := rf.currentTerm
 	lastLogIndex := len(rf.log) - 1
