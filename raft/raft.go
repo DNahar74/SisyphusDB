@@ -186,8 +186,19 @@ func Make(peers []pb.RaftServiceClient, me int, applyCh chan ApplyMsg) *Raft {
 	rf.wal = wal
 
 	// Recover state from WAL
-	rf.readPersist()
+	snapshot := rf.readPersist()
 	rf.lastResetTime = time.Now()
+
+	if len(snapshot) > 0 {
+		go func() {
+			rf.applyCh <- ApplyMsg{
+				SnapshotValid: true,
+				Snapshot:      snapshot,
+				SnapshotTerm:  rf.lastIncludedTerm,
+				SnapshotIndex: rf.lastIncludedIndex,
+			}
+		}()
+	}
 
 	go rf.ticker()
 	go rf.applier()
@@ -299,7 +310,7 @@ func (rf *Raft) startElection() {
 						rf.state = Leader
 						rf.leaderId = rf.me
 						for p := range rf.peers {
-							rf.nextIndex[p] = len(rf.log)
+							rf.nextIndex[p] = rf.getLastLogIndex() + 1
 							rf.matchIndex[p] = 0
 						}
 						go rf.sendHeartBeats()
